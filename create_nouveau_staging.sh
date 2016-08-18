@@ -38,3 +38,5 @@ for series in $(cat patch_list); do
 done
 
 git checkout -b ready
+
+echo "!!! nouveau patching done. Compile inside nouveau/drm"
