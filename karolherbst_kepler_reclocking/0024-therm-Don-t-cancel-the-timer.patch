@@ -1,0 +1,62 @@
+From 9e42ed4b2a5f78c7729bb5167ba58a8eb3afc2eb Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:09 +0200
+Subject: [PATCH 24/36] therm: Don't cancel the timer
+
+We will need a always running therm daemon to adjust the voltage/clocks on
+the fly.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/nvkm/subdev/therm/base.c | 9 ++-------
+ 1 file changed, 2 insertions(+), 7 deletions(-)
+
+diff --git a/drm/nouveau/nvkm/subdev/therm/base.c b/drm/nouveau/nvkm/subdev/therm/base.c
+index 8894fee..0c0feec 100644
+--- a/drm/nouveau/nvkm/subdev/therm/base.c
++++ b/drm/nouveau/nvkm/subdev/therm/base.c
+@@ -92,7 +92,6 @@ nvkm_therm_update(struct nvkm_therm *therm, int mode)
+ 	struct nvkm_timer *tmr = subdev->device->timer;
+ 	unsigned long flags;
+ 	bool immd = true;
+-	bool poll = true;
+ 	int duty = -1;
+ 
+ 	spin_lock_irqsave(&therm->lock, flags);
+@@ -102,11 +101,9 @@ nvkm_therm_update(struct nvkm_therm *therm, int mode)
+ 
+ 	switch (mode) {
+ 	case NVKM_THERM_CTRL_MANUAL:
+-		nvkm_timer_alarm_cancel(tmr, &therm->alarm);
+ 		duty = nvkm_therm_fan_get(therm);
+ 		if (duty < 0)
+ 			duty = 100;
+-		poll = false;
+ 		break;
+ 	case NVKM_THERM_CTRL_AUTO:
+ 		switch(therm->fan->bios.fan_mode) {
+@@ -119,18 +116,16 @@ nvkm_therm_update(struct nvkm_therm *therm, int mode)
+ 		case NVBIOS_THERM_FAN_OTHER:
+ 			if (therm->cstate)
+ 				duty = therm->cstate;
+-			poll = false;
+ 			break;
+ 		}
+ 		immd = false;
+ 		break;
+ 	case NVKM_THERM_CTRL_NONE:
+ 	default:
+-		nvkm_timer_alarm_cancel(tmr, &therm->alarm);
+-		poll = false;
++		break;
+ 	}
+ 
+-	if (list_empty(&therm->alarm.head) && poll)
++	if (list_empty(&therm->alarm.head))
+ 		nvkm_timer_alarm(tmr, 1000000000ULL, &therm->alarm);
+ 	spin_unlock_irqrestore(&therm->lock, flags);
+ 
+-- 
+2.9.2
+

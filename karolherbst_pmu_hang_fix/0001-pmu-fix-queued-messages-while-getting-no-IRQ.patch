@@ -1,0 +1,106 @@
+From d5998e334dc3bbb835990894712234ed029762e4 Mon Sep 17 00:00:00 2001
+From: Karol Herbst <nouveau@karolherbst.de>
+Date: Fri, 13 Nov 2015 17:27:19 +0100
+Subject: [PATCH] pmu: fix queued messages while getting no IRQ
+
+I encountered while stresstesting the reclocking code, that rarely (1 out of
+20.000+ requests) we don't get any IRQ in nvkm_pmu_intr. Though this issue was
+fixed now, there can be other reasons to not get any reply from the pmu.
+
+This means nouveau still waits infinitely in nvkm_pmu_send:
+	if (reply) {
+		wait_event(pmu->recv.wait, (pmu->recv.process == 0));
+
+therefore let us use wait_event_timeout with a 1s timeout frame and just check
+whether there is a message queued and handle it if there is one.
+
+Return -ETIMEDOUT whenever we timed out and there is no message queued or when
+we hit another timeout while trying to read the message without getting any IRQ
+
+The benefit of not using wait_event is, that we don't have a kworker waiting
+on an event, which makes it easier to reload the module at runtime, which helps
+me developing on nouveau on my laptop a lot, because I don't need to reboot
+anymore
+
+Nethertheless, we shouldn't use wait_event here, because we can't guarantee any
+answere at all, can we?
+
+v2: moved it into a new function
+
+Signed-off-by: Karol Herbst <nouveau@karolherbst.de>
+---
+ drm/nouveau/nvkm/subdev/pmu/base.c | 41 ++++++++++++++++++++++++++++++++++----
+ 1 file changed, 37 insertions(+), 4 deletions(-)
+
+diff --git a/drm/nouveau/nvkm/subdev/pmu/base.c b/drm/nouveau/nvkm/subdev/pmu/base.c
+index 8dd164d..bb2c29b 100644
+--- a/drm/nouveau/nvkm/subdev/pmu/base.c
++++ b/drm/nouveau/nvkm/subdev/pmu/base.c
+@@ -32,6 +32,36 @@ nvkm_pmu_pgob(struct nvkm_pmu *pmu, bool enable)
+ 		pmu->func->pgob(pmu, enable);
+ }
+ 
++static int
++wait_for_pmu_reply(struct nvkm_pmu *pmu, u32 reply[2])
++{
++	struct nvkm_subdev *subdev = &pmu->subdev;
++	struct nvkm_device *device = subdev->device;
++	unsigned long js = msecs_to_jiffies(1000);
++
++	if (!wait_event_timeout(pmu->recv.wait, pmu->recv.process == 0, js)) {
++		u32 addr = nvkm_rd32(device, 0x10a4cc);
++		nvkm_error(subdev, "wait on reply timed out\n");
++
++		if (addr == nvkm_rd32(device, 0x10a4c8))
++			return -ETIMEDOUT;
++
++		nvkm_error(subdev, "found queued message without getting an"
++			   "interrupt\n");
++		schedule_work(&pmu->recv.work);
++
++		if (!wait_event_timeout(pmu->recv.wait, pmu->recv.process == 0,
++					js)) {
++			nvkm_error(subdev, "failed to repair PMU state\n");
++			return -ETIMEDOUT;
++		}
++	}
++
++	reply[0] = pmu->recv.data[0];
++	reply[1] = pmu->recv.data[1];
++	return 0;
++}
++
+ int
+ nvkm_pmu_send(struct nvkm_pmu *pmu, u32 reply[2],
+ 	      u32 process, u32 message, u32 data0, u32 data1)
+@@ -39,6 +69,7 @@ nvkm_pmu_send(struct nvkm_pmu *pmu, u32 reply[2],
+ 	struct nvkm_subdev *subdev = &pmu->subdev;
+ 	struct nvkm_device *device = subdev->device;
+ 	u32 addr;
++	int ret = 0;
+ 
+ 	mutex_lock(&subdev->mutex);
+ 	/* wait for a free slot in the fifo */
+@@ -80,13 +111,15 @@ nvkm_pmu_send(struct nvkm_pmu *pmu, u32 reply[2],
+ 
+ 	/* wait for reply, if requested */
+ 	if (reply) {
+-		wait_event(pmu->recv.wait, (pmu->recv.process == 0));
+-		reply[0] = pmu->recv.data[0];
+-		reply[1] = pmu->recv.data[1];
++		ret = wait_for_pmu_reply(pmu, reply);
++		if (ret < 0) {
++			reply[0] = 0;
++			reply[1] = 0;
++		}
+ 	}
+ 
+ 	mutex_unlock(&subdev->mutex);
+-	return 0;
++	return ret;
+ }
+ 
+ static void
+-- 
+2.9.2
+

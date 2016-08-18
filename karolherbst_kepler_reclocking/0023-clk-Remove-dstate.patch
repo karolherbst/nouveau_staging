@@ -1,0 +1,88 @@
+From 59480abcc71c894f010d0a3feba557a25128d93b Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:09 +0200
+Subject: [PATCH 23/36] clk: Remove dstate
+
+We won't need it now, because we will adjust the clocks depending on engine
+loads later on anyway or a static lockup table. It also simplifies the
+clocking logic.
+
+This code was nowhere used anyway and just a mock up.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/include/nvkm/subdev/clk.h |  2 --
+ drm/nouveau/nvkm/subdev/clk/base.c    | 16 ++--------------
+ 2 files changed, 2 insertions(+), 16 deletions(-)
+
+diff --git a/drm/nouveau/include/nvkm/subdev/clk.h b/drm/nouveau/include/nvkm/subdev/clk.h
+index 59e727a..42fbf7e 100644
+--- a/drm/nouveau/include/nvkm/subdev/clk.h
++++ b/drm/nouveau/include/nvkm/subdev/clk.h
+@@ -99,7 +99,6 @@ struct nvkm_clk {
+ 	int ustate_ac; /* user-requested (-1 disabled, -2 perfmon) */
+ 	int ustate_dc; /* user-requested (-1 disabled, -2 perfmon) */
+ 	int astate; /* perfmon adjustment (base) */
+-	int dstate; /* display adjustment (min+) */
+ 	u8  temp;
+ 
+ 	bool allow_reclock;
+@@ -122,7 +121,6 @@ struct nvkm_clk {
+ int nvkm_clk_read(struct nvkm_clk *, enum nv_clk_src);
+ int nvkm_clk_ustate(struct nvkm_clk *, int req, int pwr);
+ int nvkm_clk_astate(struct nvkm_clk *, int req, int rel, bool wait);
+-int nvkm_clk_dstate(struct nvkm_clk *, int req, int rel);
+ int nvkm_clk_tstate(struct nvkm_clk *, u8 temperature);
+ int nvkm_clk_update(struct nvkm_clk *clk, bool wait);
+ 
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index 8cfd9cc..a568c5d 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -308,15 +308,14 @@ nvkm_clk_update_work(struct work_struct *work)
+ 		return;
+ 	clk->pwrsrc = power_supply_is_system_supplied();
+ 
+-	nvkm_trace(subdev, "P %d PWR %d U(AC) %d U(DC) %d A %d T %d°C D %d\n",
++	nvkm_trace(subdev, "P %d PWR %d U(AC) %d U(DC) %d A %d T %d°C\n",
+ 		   clk->pstate, clk->pwrsrc, clk->ustate_ac, clk->ustate_dc,
+-		   clk->astate, clk->temp, clk->dstate);
++		   clk->astate, clk->temp);
+ 
+ 	pstate = clk->pwrsrc ? clk->ustate_ac : clk->ustate_dc;
+ 	if (clk->state_nr && pstate != -1) {
+ 		pstate = (pstate < 0) ? clk->astate : pstate;
+ 		pstate = min(pstate, clk->state_nr - 1);
+-		pstate = max(pstate, clk->dstate);
+ 	} else {
+ 		pstate = clk->pstate = -1;
+ 	}
+@@ -556,16 +555,6 @@ nvkm_clk_tstate(struct nvkm_clk *clk, u8 temp)
+ 	return nvkm_clk_update(clk, false);
+ }
+ 
+-int
+-nvkm_clk_dstate(struct nvkm_clk *clk, int req, int rel)
+-{
+-	if (!rel) clk->dstate  = req;
+-	if ( rel) clk->dstate += rel;
+-	clk->dstate = min(clk->dstate, clk->state_nr - 1);
+-	clk->dstate = max(clk->dstate, 0);
+-	return nvkm_clk_update(clk, true);
+-}
+-
+ static int
+ nvkm_clk_pwrsrc(struct nvkm_notify *notify)
+ {
+@@ -623,7 +612,6 @@ nvkm_clk_init(struct nvkm_subdev *subdev)
+ 		return clk->func->init(clk);
+ 
+ 	clk->astate = clk->state_nr - 1;
+-	clk->dstate = 0;
+ 	clk->pstate = -1;
+ 	clk->temp = 90; /* reasonable default value */
+ 	nvkm_clk_update(clk, true);
+-- 
+2.9.2
+

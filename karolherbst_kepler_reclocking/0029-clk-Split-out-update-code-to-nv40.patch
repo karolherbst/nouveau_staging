@@ -1,0 +1,220 @@
+From ee9a1d1fc05e81bedb42c2b7556113f918df773d Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:10 +0200
+Subject: [PATCH 29/36] clk: Split out update code to nv40
+
+This code will change for gf100 and newer.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/nvkm/subdev/clk/base.c  | 14 +++++---------
+ drm/nouveau/nvkm/subdev/clk/g84.c   |  1 +
+ drm/nouveau/nvkm/subdev/clk/gf100.c |  1 +
+ drm/nouveau/nvkm/subdev/clk/gk104.c |  1 +
+ drm/nouveau/nvkm/subdev/clk/gk20a.c |  1 +
+ drm/nouveau/nvkm/subdev/clk/gm20b.c |  1 +
+ drm/nouveau/nvkm/subdev/clk/gt215.c |  1 +
+ drm/nouveau/nvkm/subdev/clk/mcp77.c |  1 +
+ drm/nouveau/nvkm/subdev/clk/nv40.c  | 18 ++++++++++++++++++
+ drm/nouveau/nvkm/subdev/clk/nv50.c  |  1 +
+ drm/nouveau/nvkm/subdev/clk/priv.h  |  5 +++++
+ 11 files changed, 36 insertions(+), 9 deletions(-)
+
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index 759c55c..7d637f1 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -273,7 +273,7 @@ nvkm_cstate_new(struct nvkm_clk *clk, int idx, struct nvkm_pstate *pstate)
+ /******************************************************************************
+  * P-States
+  *****************************************************************************/
+-static int
++int
+ nvkm_pstate_prog(struct nvkm_clk *clk, int pstateid)
+ {
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+@@ -318,6 +318,9 @@ nvkm_clk_update_impl(struct nvkm_clk *clk)
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+ 	int pstate;
+ 
++	if (!clk->func->update)
++		return;
++
+ 	clk->pwrsrc = power_supply_is_system_supplied();
+ 
+ 	if (clk->pstate)
+@@ -335,14 +338,7 @@ nvkm_clk_update_impl(struct nvkm_clk *clk)
+ 		pstate = NVKM_CLK_PSTATE_DEFAULT;
+ 	}
+ 
+-	nvkm_trace(subdev, "-> %d\n", pstate);
+-	if (!clk->pstate || pstate != clk->pstate->pstate) {
+-		int ret = nvkm_pstate_prog(clk, pstate);
+-		if (ret) {
+-			nvkm_error(subdev, "error setting pstate %d: %d\n",
+-				   pstate, ret);
+-		}
+-	}
++	clk->func->update(clk, pstate);
+ }
+ 
+ static void
+diff --git a/drm/nouveau/nvkm/subdev/clk/g84.c b/drm/nouveau/nvkm/subdev/clk/g84.c
+index f97e3ec..7b9b30d 100644
+--- a/drm/nouveau/nvkm/subdev/clk/g84.c
++++ b/drm/nouveau/nvkm/subdev/clk/g84.c
+@@ -29,6 +29,7 @@ g84_clk = {
+ 	.calc = nv50_clk_calc,
+ 	.prog = nv50_clk_prog,
+ 	.tidy = nv50_clk_tidy,
++	.update = nv40_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/gf100.c b/drm/nouveau/nvkm/subdev/clk/gf100.c
+index 7f67f9f..8a46bf8 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gf100.c
++++ b/drm/nouveau/nvkm/subdev/clk/gf100.c
+@@ -451,6 +451,7 @@ gf100_clk = {
+ 	.calc = gf100_clk_calc,
+ 	.prog = gf100_clk_prog,
+ 	.tidy = gf100_clk_tidy,
++	.update = nv40_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/gk104.c b/drm/nouveau/nvkm/subdev/clk/gk104.c
+index 0b37e3d..cae58b6 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gk104.c
++++ b/drm/nouveau/nvkm/subdev/clk/gk104.c
+@@ -488,6 +488,7 @@ gk104_clk = {
+ 	.calc = gk104_clk_calc,
+ 	.prog = gk104_clk_prog,
+ 	.tidy = gk104_clk_tidy,
++	.update = nv40_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/gk20a.c b/drm/nouveau/nvkm/subdev/clk/gk20a.c
+index 218893e..ae40675 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gk20a.c
++++ b/drm/nouveau/nvkm/subdev/clk/gk20a.c
+@@ -600,6 +600,7 @@ gk20a_clk = {
+ 	.calc = gk20a_clk_calc,
+ 	.prog = gk20a_clk_prog,
+ 	.tidy = gk20a_clk_tidy,
++	.update = nv40_clk_update,
+ 	.pstates = gk20a_pstates,
+ 	.nr_pstates = ARRAY_SIZE(gk20a_pstates),
+ 	.domains = {
+diff --git a/drm/nouveau/nvkm/subdev/clk/gm20b.c b/drm/nouveau/nvkm/subdev/clk/gm20b.c
+index b284e94..74346c8 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gm20b.c
++++ b/drm/nouveau/nvkm/subdev/clk/gm20b.c
+@@ -880,6 +880,7 @@ gm20b_clk_speedo0 = {
+ 	.calc = gk20a_clk_calc,
+ 	.prog = gk20a_clk_prog,
+ 	.tidy = gk20a_clk_tidy,
++	.update = nv40_clk_update,
+ 	.pstates = gm20b_pstates,
+ 	/* Speedo 0 only supports 12 voltages */
+ 	.nr_pstates = ARRAY_SIZE(gm20b_pstates) - 1,
+diff --git a/drm/nouveau/nvkm/subdev/clk/gt215.c b/drm/nouveau/nvkm/subdev/clk/gt215.c
+index 056702e..8913afa 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gt215.c
++++ b/drm/nouveau/nvkm/subdev/clk/gt215.c
+@@ -520,6 +520,7 @@ gt215_clk = {
+ 	.calc = gt215_clk_calc,
+ 	.prog = gt215_clk_prog,
+ 	.tidy = gt215_clk_tidy,
++	.update = nv40_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal  , 0xff },
+ 		{ nv_clk_src_core     , 0x00, 0, "core", 1000 },
+diff --git a/drm/nouveau/nvkm/subdev/clk/mcp77.c b/drm/nouveau/nvkm/subdev/clk/mcp77.c
+index 1c21b8b..e80b68e 100644
+--- a/drm/nouveau/nvkm/subdev/clk/mcp77.c
++++ b/drm/nouveau/nvkm/subdev/clk/mcp77.c
+@@ -400,6 +400,7 @@ mcp77_clk = {
+ 	.calc = mcp77_clk_calc,
+ 	.prog = mcp77_clk_prog,
+ 	.tidy = mcp77_clk_tidy,
++	.update = nv40_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/nv40.c b/drm/nouveau/nvkm/subdev/clk/nv40.c
+index 2ab9b9b..1576899 100644
+--- a/drm/nouveau/nvkm/subdev/clk/nv40.c
++++ b/drm/nouveau/nvkm/subdev/clk/nv40.c
+@@ -201,12 +201,30 @@ nv40_clk_tidy(struct nvkm_clk *obj)
+ {
+ }
+ 
++void
++nv40_clk_update(struct nvkm_clk *clk, int pstate)
++{
++	struct nvkm_subdev *subdev = &clk->subdev;
++	int ret;
++
++	if (clk->pstate && pstate == clk->pstate->pstate)
++		return;
++
++	nvkm_trace(subdev, "-> %d\n", pstate);
++	ret = nvkm_pstate_prog(clk, pstate);
++	if (ret) {
++		nvkm_error(subdev, "error setting pstate %d: %d\n",
++			   pstate, ret);
++	}
++}
++
+ static const struct nvkm_clk_func
+ nv40_clk = {
+ 	.read = nv40_clk_read,
+ 	.calc = nv40_clk_calc,
+ 	.prog = nv40_clk_prog,
+ 	.tidy = nv40_clk_tidy,
++	.update = nv40_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/nv50.c b/drm/nouveau/nvkm/subdev/clk/nv50.c
+index 5841f29..b29318e 100644
+--- a/drm/nouveau/nvkm/subdev/clk/nv50.c
++++ b/drm/nouveau/nvkm/subdev/clk/nv50.c
+@@ -544,6 +544,7 @@ nv50_clk = {
+ 	.calc = nv50_clk_calc,
+ 	.prog = nv50_clk_prog,
+ 	.tidy = nv50_clk_tidy,
++	.update = nv40_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/priv.h b/drm/nouveau/nvkm/subdev/clk/priv.h
+index 51eafc0..958f5e3 100644
+--- a/drm/nouveau/nvkm/subdev/clk/priv.h
++++ b/drm/nouveau/nvkm/subdev/clk/priv.h
+@@ -10,6 +10,7 @@ struct nvkm_clk_func {
+ 	int (*calc)(struct nvkm_clk *, struct nvkm_cstate *);
+ 	int (*prog)(struct nvkm_clk *);
+ 	void (*tidy)(struct nvkm_clk *);
++	void (*update)(struct nvkm_clk *, int pstate);
+ 	struct nvkm_pstate *pstates;
+ 	int nr_pstates;
+ 	struct nvkm_domain domains[];
+@@ -20,7 +21,11 @@ int nvkm_clk_ctor(const struct nvkm_clk_func *, struct nvkm_device *, int,
+ int nvkm_clk_new_(const struct nvkm_clk_func *, struct nvkm_device *, int,
+ 		  bool allow_reclock, struct nvkm_clk **);
+ 
++int nvkm_pstate_prog(struct nvkm_clk *, int pstateid);
++
+ int nv04_clk_pll_calc(struct nvkm_clk *, struct nvbios_pll *, int clk,
+ 		      struct nvkm_pll_vals *);
+ int nv04_clk_pll_prog(struct nvkm_clk *, u32 reg1, struct nvkm_pll_vals *);
++
++void nv40_clk_update(struct nvkm_clk *, int pstate);
+ #endif
+-- 
+2.9.2
+

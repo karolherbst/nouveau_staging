@@ -1,0 +1,56 @@
+From ed3a3e7ca1820c245a92e036f2e899227b1a5f79 Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:09 +0200
+Subject: [PATCH 28/36] clk: Separate the locking from the implementation in
+ nvkm_clk_update
+
+This way can safely call call the code from wherever we like without the
+need to run the code inside a worker.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/nvkm/subdev/clk/base.c | 16 ++++++++++++----
+ 1 file changed, 12 insertions(+), 4 deletions(-)
+
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index 2ac109b..759c55c 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -313,14 +313,11 @@ nvkm_pstate_prog(struct nvkm_clk *clk, int pstateid)
+ }
+ 
+ static void
+-nvkm_clk_update_work(struct work_struct *work)
++nvkm_clk_update_impl(struct nvkm_clk *clk)
+ {
+-	struct nvkm_clk *clk = container_of(work, typeof(*clk), work);
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+ 	int pstate;
+ 
+-	if (!atomic_xchg(&clk->waiting, 0))
+-		return;
+ 	clk->pwrsrc = power_supply_is_system_supplied();
+ 
+ 	if (clk->pstate)
+@@ -346,6 +343,17 @@ nvkm_clk_update_work(struct work_struct *work)
+ 				   pstate, ret);
+ 		}
+ 	}
++}
++
++static void
++nvkm_clk_update_work(struct work_struct *work)
++{
++	struct nvkm_clk *clk = container_of(work, typeof(*clk), work);
++
++	if (!atomic_xchg(&clk->waiting, 0))
++		return;
++
++	nvkm_clk_update_impl(clk);
+ 
+ 	wake_up_all(&clk->wait);
+ 	nvkm_notify_get(&clk->pwrsrc_ntfy);
+-- 
+2.9.2
+

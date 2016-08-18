@@ -1,0 +1,166 @@
+From 8599d2e9b0a3ce769b23f1d9ec2634fdc4323cd4 Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:09 +0200
+Subject: [PATCH 25/36] clk: Make pstate a pointer to nvkm_pstate
+
+We will access the current set cstate at least every second and this safes
+us some CPU cycles looking them up every second.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/include/nvkm/subdev/clk.h |  4 +++-
+ drm/nouveau/nvkm/engine/device/ctrl.c |  5 ++++-
+ drm/nouveau/nvkm/subdev/clk/base.c    | 17 ++++++++++++-----
+ drm/nouveau/nvkm/subdev/pmu/gk20a.c   | 23 +++++++----------------
+ 4 files changed, 26 insertions(+), 23 deletions(-)
+
+diff --git a/drm/nouveau/include/nvkm/subdev/clk.h b/drm/nouveau/include/nvkm/subdev/clk.h
+index 42fbf7e..ca54371 100644
+--- a/drm/nouveau/include/nvkm/subdev/clk.h
++++ b/drm/nouveau/include/nvkm/subdev/clk.h
+@@ -10,6 +10,8 @@ struct nvkm_pll_vals;
+ #define NVKM_CLK_CSTATE_BASE    -2 /* pstate base */
+ #define NVKM_CLK_CSTATE_HIGHEST -3 /* highest possible */
+ 
++#define NVKM_CLK_PSTATE_DEFAULT -1
++
+ enum nv_clk_src {
+ 	nv_clk_src_crystal,
+ 	nv_clk_src_href,
+@@ -95,7 +97,7 @@ struct nvkm_clk {
+ 
+ 	struct nvkm_notify pwrsrc_ntfy;
+ 	int pwrsrc;
+-	int pstate; /* current */
++	struct nvkm_pstate *pstate; /* current */
+ 	int ustate_ac; /* user-requested (-1 disabled, -2 perfmon) */
+ 	int ustate_dc; /* user-requested (-1 disabled, -2 perfmon) */
+ 	int astate; /* perfmon adjustment (base) */
+diff --git a/drm/nouveau/nvkm/engine/device/ctrl.c b/drm/nouveau/nvkm/engine/device/ctrl.c
+index cf7f27e..0c44e4d 100644
+--- a/drm/nouveau/nvkm/engine/device/ctrl.c
++++ b/drm/nouveau/nvkm/engine/device/ctrl.c
+@@ -52,7 +52,10 @@ nvkm_control_mthd_pstate_info(struct nvkm_control *ctrl, void *data, u32 size)
+ 		args->v0.ustate_ac = clk->ustate_ac;
+ 		args->v0.ustate_dc = clk->ustate_dc;
+ 		args->v0.pwrsrc = clk->pwrsrc;
+-		args->v0.pstate = clk->pstate;
++		if (clk->pstate)
++			args->v0.pstate = clk->pstate->pstate;
++		else
++			args->v0.pstate = NVKM_CLK_PSTATE_DEFAULT;
+ 	} else {
+ 		args->v0.count = 0;
+ 		args->v0.ustate_ac = NVIF_CONTROL_PSTATE_INFO_V0_USTATE_DISABLE;
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index a568c5d..81f3548 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -273,13 +273,16 @@ nvkm_pstate_prog(struct nvkm_clk *clk, int pstatei)
+ 	struct nvkm_pstate *pstate;
+ 	int ret, idx = 0;
+ 
++	if (pstatei == NVKM_CLK_PSTATE_DEFAULT)
++		return 0;
++
+ 	list_for_each_entry(pstate, &clk->states, head) {
+ 		if (idx++ == pstatei)
+ 			break;
+ 	}
+ 
+ 	nvkm_debug(subdev, "setting performance state %d\n", pstatei);
+-	clk->pstate = pstatei;
++	clk->pstate = pstate;
+ 
+ 	nvkm_pcie_set_link(pci, pstate->pcie_speed, pstate->pcie_width);
+ 
+@@ -308,8 +311,12 @@ nvkm_clk_update_work(struct work_struct *work)
+ 		return;
+ 	clk->pwrsrc = power_supply_is_system_supplied();
+ 
++	if (clk->pstate)
++		pstate = clk->pstate->pstate;
++	else
++		pstate = NVKM_CLK_PSTATE_DEFAULT;
+ 	nvkm_trace(subdev, "P %d PWR %d U(AC) %d U(DC) %d A %d T %d°C\n",
+-		   clk->pstate, clk->pwrsrc, clk->ustate_ac, clk->ustate_dc,
++		   pstate, clk->pwrsrc, clk->ustate_ac, clk->ustate_dc,
+ 		   clk->astate, clk->temp);
+ 
+ 	pstate = clk->pwrsrc ? clk->ustate_ac : clk->ustate_dc;
+@@ -317,11 +324,11 @@ nvkm_clk_update_work(struct work_struct *work)
+ 		pstate = (pstate < 0) ? clk->astate : pstate;
+ 		pstate = min(pstate, clk->state_nr - 1);
+ 	} else {
+-		pstate = clk->pstate = -1;
++		pstate = NVKM_CLK_PSTATE_DEFAULT;
+ 	}
+ 
+ 	nvkm_trace(subdev, "-> %d\n", pstate);
+-	if (pstate != clk->pstate) {
++	if (!clk->pstate || pstate != clk->pstate->pstate) {
+ 		int ret = nvkm_pstate_prog(clk, pstate);
+ 		if (ret) {
+ 			nvkm_error(subdev, "error setting pstate %d: %d\n",
+@@ -612,7 +619,7 @@ nvkm_clk_init(struct nvkm_subdev *subdev)
+ 		return clk->func->init(clk);
+ 
+ 	clk->astate = clk->state_nr - 1;
+-	clk->pstate = -1;
++	clk->pstate = NULL;
+ 	clk->temp = 90; /* reasonable default value */
+ 	nvkm_clk_update(clk, true);
+ 	return 0;
+diff --git a/drm/nouveau/nvkm/subdev/pmu/gk20a.c b/drm/nouveau/nvkm/subdev/pmu/gk20a.c
+index f996d90..6f0d290 100644
+--- a/drm/nouveau/nvkm/subdev/pmu/gk20a.c
++++ b/drm/nouveau/nvkm/subdev/pmu/gk20a.c
+@@ -57,24 +57,21 @@ gk20a_pmu_dvfs_target(struct gk20a_pmu *pmu, int *state)
+ }
+ 
+ static int
+-gk20a_pmu_dvfs_get_cur_state(struct gk20a_pmu *pmu, int *state)
+-{
+-	struct nvkm_clk *clk = pmu->base.subdev.device->clk;
+-
+-	*state = clk->pstate;
+-	return 0;
+-}
+-
+-static int
+ gk20a_pmu_dvfs_get_target_state(struct gk20a_pmu *pmu,
+ 				int *state, int load)
+ {
+ 	struct gk20a_pmu_dvfs_data *data = pmu->data;
+ 	struct nvkm_clk *clk = pmu->base.subdev.device->clk;
++	struct nvkm_pstate *pstate = clk->pstate;
+ 	int cur_level, level;
+ 
++	if (!pstate) {
++		*state = 0;
++		return 1;
++	}
++
+ 	/* For GK20A, the performance level is directly mapped to pstate */
+-	level = cur_level = clk->pstate;
++	level = cur_level = clk->pstate->pstate;
+ 
+ 	if (load > data->p_load_max) {
+ 		level = min(clk->state_nr - 1, level + (clk->state_nr / 3));
+@@ -150,12 +147,6 @@ gk20a_pmu_dvfs_work(struct nvkm_alarm *alarm)
+ 	nvkm_trace(subdev, "utilization = %d %%, avg_load = %d %%\n",
+ 		   utilization, data->avg_load);
+ 
+-	ret = gk20a_pmu_dvfs_get_cur_state(pmu, &state);
+-	if (ret) {
+-		nvkm_warn(subdev, "failed to get current state\n");
+-		goto resched;
+-	}
+-
+ 	if (gk20a_pmu_dvfs_get_target_state(pmu, &state, data->avg_load)) {
+ 		nvkm_trace(subdev, "set new state to %d\n", state);
+ 		gk20a_pmu_dvfs_target(pmu, &state);
+-- 
+2.9.2
+

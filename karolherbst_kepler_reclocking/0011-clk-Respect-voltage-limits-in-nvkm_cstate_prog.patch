@@ -1,0 +1,122 @@
+From 1bc2aa8a5725728e56e186ee161f2e957fdb932f Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Sat, 16 Jul 2016 15:26:25 +0200
+Subject: [PATCH 11/36] clk: Respect voltage limits in nvkm_cstate_prog
+
+We should never allow to select a cstate which current voltage (depending
+on the temperature) is higher than
+
+1. the max volt entries in the voltage map table.
+2. what tha gpu actually can volt to.
+
+v3: Use find_best for all cstates before actually trying.
+    Add nvkm_cstate_get function to get cstate by index.
+v5: Cstates with voltages lower then min_uv are valid.
+    Move nvkm_cstate_get into the previous commit.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/include/nvkm/subdev/volt.h |  1 +
+ drm/nouveau/nvkm/subdev/clk/base.c     | 52 ++++++++++++++++++++++++++++++++++
+ drm/nouveau/nvkm/subdev/volt/base.c    |  2 +-
+ 3 files changed, 54 insertions(+), 1 deletion(-)
+
+diff --git a/drm/nouveau/include/nvkm/subdev/volt.h b/drm/nouveau/include/nvkm/subdev/volt.h
+index 06d4593..a02dd85 100644
+--- a/drm/nouveau/include/nvkm/subdev/volt.h
++++ b/drm/nouveau/include/nvkm/subdev/volt.h
+@@ -27,6 +27,7 @@ struct nvkm_volt {
+ 	u8 max2_id;
+ };
+ 
++int nvkm_volt_map(struct nvkm_volt *volt, u8 id, u8 temperature);
+ int nvkm_volt_map_min(struct nvkm_volt *volt, u8 id);
+ int nvkm_volt_get(struct nvkm_volt *);
+ int nvkm_volt_set_id(struct nvkm_volt *, u8 id, u8 min_id, int condition);
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index a6b23f0..bf34130 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -74,6 +74,57 @@ nvkm_clk_adjust(struct nvkm_clk *clk, bool adjust,
+ /******************************************************************************
+  * C-States
+  *****************************************************************************/
++static bool
++nvkm_cstate_valid(struct nvkm_clk *clk, struct nvkm_cstate *cstate,
++		  u32 max_volt, int temp)
++{
++	struct nvkm_volt *volt = clk->subdev.device->volt;
++	int voltage;
++
++	if (!volt)
++		return true;
++
++	voltage = nvkm_volt_map(volt, cstate->voltage, temp);
++	if (voltage < 0)
++		return false;
++	return voltage <= min(max_volt, volt->max_uv);
++}
++
++static struct nvkm_cstate *
++nvkm_cstate_find_best(struct nvkm_clk *clk, struct nvkm_pstate *pstate,
++		      struct nvkm_cstate *start)
++{
++	struct nvkm_device *device = clk->subdev.device;
++	struct nvkm_volt *volt = device->volt;
++	struct nvkm_cstate *cstate;
++	int max_volt;
++
++	if (!pstate || !start)
++		return NULL;
++
++	if (!volt)
++		return start;
++
++	max_volt = volt->max_uv;
++	if (volt->max0_id != 0xff)
++		max_volt = min(max_volt,
++			       nvkm_volt_map(volt, volt->max0_id, clk->temp));
++	if (volt->max1_id != 0xff)
++		max_volt = min(max_volt,
++			       nvkm_volt_map(volt, volt->max1_id, clk->temp));
++	if (volt->max2_id != 0xff)
++		max_volt = min(max_volt,
++			       nvkm_volt_map(volt, volt->max2_id, clk->temp));
++
++	for (cstate = start; &cstate->head != &pstate->list;
++	     cstate = list_entry(cstate->head.prev, typeof(*cstate), head)) {
++		if (nvkm_cstate_valid(clk, cstate, max_volt, clk->temp))
++			break;
++	}
++
++	return cstate;
++}
++
+ static struct nvkm_cstate *
+ nvkm_cstate_get(struct nvkm_clk *clk, struct nvkm_pstate *pstate, int cstatei)
+ {
+@@ -101,6 +152,7 @@ nvkm_cstate_prog(struct nvkm_clk *clk, struct nvkm_pstate *pstate, int cstatei)
+ 
+ 	if (!list_empty(&pstate->list)) {
+ 		cstate = nvkm_cstate_get(clk, pstate, cstatei);
++		cstate = nvkm_cstate_find_best(clk, pstate, cstate);
+ 	} else {
+ 		cstate = &pstate->base;
+ 	}
+diff --git a/drm/nouveau/nvkm/subdev/volt/base.c b/drm/nouveau/nvkm/subdev/volt/base.c
+index f3549d8..afb86df 100644
+--- a/drm/nouveau/nvkm/subdev/volt/base.c
++++ b/drm/nouveau/nvkm/subdev/volt/base.c
+@@ -88,7 +88,7 @@ nvkm_volt_map_min(struct nvkm_volt *volt, u8 id)
+ 	return id ? id * 10000 : -ENODEV;
+ }
+ 
+-static int
++int
+ nvkm_volt_map(struct nvkm_volt *volt, u8 id, u8 temp)
+ {
+ 	struct nvkm_bios *bios = volt->subdev.device->bios;
+-- 
+2.9.2
+

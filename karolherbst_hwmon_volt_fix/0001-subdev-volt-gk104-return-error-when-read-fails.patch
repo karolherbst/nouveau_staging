@@ -1,0 +1,39 @@
+From 8079f5e0df6e570999831b734670c7b0fd662dff Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Sun, 31 Jul 2016 12:06:12 +0200
+Subject: [PATCH] subdev/volt/gk104: return error when read fails
+
+While my gpu was powered off, hwmon returned 0.6V as the current voltage.
+If nvkm_rd32 fails for any reason, return the error.
+
+With that sensors will display a "N/A" instead of 0.6V.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+---
+ drm/nouveau/nvkm/subdev/volt/gk104.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/drm/nouveau/nvkm/subdev/volt/gk104.c b/drm/nouveau/nvkm/subdev/volt/gk104.c
+index 420bd84..1821626 100644
+--- a/drm/nouveau/nvkm/subdev/volt/gk104.c
++++ b/drm/nouveau/nvkm/subdev/volt/gk104.c
+@@ -39,10 +39,15 @@ gk104_volt_get(struct nvkm_volt *base)
+ {
+ 	struct nvbios_volt *bios = &gk104_volt(base)->bios;
+ 	struct nvkm_device *device = base->subdev.device;
+-	u32 div, duty;
++	int div, duty;
+ 
+ 	div  = nvkm_rd32(device, 0x20340);
++	if (div < 0)
++		return div;
++
+ 	duty = nvkm_rd32(device, 0x20344);
++	if (duty < 0)
++		return duty;
+ 
+ 	return bios->base + bios->pwm_range * duty / div;
+ }
+-- 
+2.9.2
+

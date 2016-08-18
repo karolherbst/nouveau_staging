@@ -1,0 +1,139 @@
+From a76514b8ac8127d9e734502b8df8f145c7926582 Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:10 +0200
+Subject: [PATCH 33/36] clk: Set clocks to pre suspend state after suspend
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/nvkm/subdev/clk/base.c  | 21 ++++++++++++---------
+ drm/nouveau/nvkm/subdev/clk/gf100.c |  4 ++--
+ drm/nouveau/nvkm/subdev/clk/nv40.c  |  4 ++--
+ drm/nouveau/nvkm/subdev/clk/priv.h  |  6 +++---
+ 4 files changed, 19 insertions(+), 16 deletions(-)
+
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index 76b8560..0daa850 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -318,7 +318,7 @@ nvkm_pstate_prog(struct nvkm_clk *clk, int pstateid)
+ }
+ 
+ static void
+-nvkm_clk_update_impl(struct nvkm_clk *clk)
++nvkm_clk_update_impl(struct nvkm_clk *clk, bool force)
+ {
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+ 	int pstate;
+@@ -343,7 +343,7 @@ nvkm_clk_update_impl(struct nvkm_clk *clk)
+ 		pstate = NVKM_CLK_PSTATE_DEFAULT;
+ 	}
+ 
+-	clk->func->update(clk, pstate);
++	clk->func->update(clk, pstate, force);
+ }
+ 
+ static void
+@@ -354,7 +354,7 @@ nvkm_clk_update_work(struct work_struct *work)
+ 	if (!atomic_xchg(&clk->waiting, 0))
+ 		return;
+ 
+-	nvkm_clk_update_impl(clk);
++	nvkm_clk_update_impl(clk, false);
+ 
+ 	wake_up_all(&clk->wait);
+ 	nvkm_notify_get(&clk->pwrsrc_ntfy);
+@@ -634,12 +634,7 @@ nvkm_clk_init(struct nvkm_subdev *subdev)
+ 	if (clk->func->init)
+ 		return clk->func->init(clk);
+ 
+-	clk->astate = NVKM_CLK_PSTATE_DEFAULT;
+-	clk->pstate = NULL;
+-	clk->exp_cstate = NVKM_CLK_CSTATE_DEFAULT;
+-	clk->set_cstate = NULL;
+-	clk->temp = 90; /* reasonable default value */
+-	nvkm_clk_update(clk, true);
++	nvkm_clk_update_impl(clk, true);
+ 	return 0;
+ }
+ 
+@@ -692,8 +687,16 @@ nvkm_clk_ctor(const struct nvkm_clk_func *func, struct nvkm_device *device,
+ 	clk->func = func;
+ 	INIT_LIST_HEAD(&clk->states);
+ 	clk->domains = func->domains;
++
++	clk->pstate = NULL;
++	clk->astate = NVKM_CLK_PSTATE_DEFAULT;
+ 	clk->ustate_ac = -1;
+ 	clk->ustate_dc = -1;
++	clk->temp = 90; /* reasonable default value */
++
++	clk->exp_cstate = NVKM_CLK_CSTATE_DEFAULT;
++	clk->set_cstate = NULL;
++
+ 	clk->allow_reclock = allow_reclock;
+ 
+ 	INIT_WORK(&clk->work, nvkm_clk_update_work);
+diff --git a/drm/nouveau/nvkm/subdev/clk/gf100.c b/drm/nouveau/nvkm/subdev/clk/gf100.c
+index 3ac0d5f..8bb7dc6 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gf100.c
++++ b/drm/nouveau/nvkm/subdev/clk/gf100.c
+@@ -461,12 +461,12 @@ gf100_clk_update_volt(struct nvkm_clk *clk)
+ }
+ 
+ void
+-gf100_clk_update(struct nvkm_clk *clk, int pstate)
++gf100_clk_update(struct nvkm_clk *clk, int pstate, bool force)
+ {
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+ 	int ret;
+ 
+-	if (!clk->pstate || clk->pstate->pstate != pstate) {
++	if (!clk->pstate || clk->pstate->pstate != pstate || force) {
+ 		nvkm_trace(subdev, "-> P %d\n", pstate);
+ 		ret = nvkm_pstate_prog(clk, pstate);
+ 		if (ret) {
+diff --git a/drm/nouveau/nvkm/subdev/clk/nv40.c b/drm/nouveau/nvkm/subdev/clk/nv40.c
+index 1576899..43721f1 100644
+--- a/drm/nouveau/nvkm/subdev/clk/nv40.c
++++ b/drm/nouveau/nvkm/subdev/clk/nv40.c
+@@ -202,12 +202,12 @@ nv40_clk_tidy(struct nvkm_clk *obj)
+ }
+ 
+ void
+-nv40_clk_update(struct nvkm_clk *clk, int pstate)
++nv40_clk_update(struct nvkm_clk *clk, int pstate, bool force)
+ {
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+ 	int ret;
+ 
+-	if (clk->pstate && pstate == clk->pstate->pstate)
++	if (!force && clk->pstate && pstate == clk->pstate->pstate)
+ 		return;
+ 
+ 	nvkm_trace(subdev, "-> %d\n", pstate);
+diff --git a/drm/nouveau/nvkm/subdev/clk/priv.h b/drm/nouveau/nvkm/subdev/clk/priv.h
+index e2f15c4..06a78a2 100644
+--- a/drm/nouveau/nvkm/subdev/clk/priv.h
++++ b/drm/nouveau/nvkm/subdev/clk/priv.h
+@@ -10,7 +10,7 @@ struct nvkm_clk_func {
+ 	int (*calc)(struct nvkm_clk *, struct nvkm_cstate *);
+ 	int (*prog)(struct nvkm_clk *);
+ 	void (*tidy)(struct nvkm_clk *);
+-	void (*update)(struct nvkm_clk *, int pstate);
++	void (*update)(struct nvkm_clk *, int pstate, bool force);
+ 	struct nvkm_pstate *pstates;
+ 	int nr_pstates;
+ 	struct nvkm_domain domains[];
+@@ -30,6 +30,6 @@ int nv04_clk_pll_calc(struct nvkm_clk *, struct nvbios_pll *, int clk,
+ 		      struct nvkm_pll_vals *);
+ int nv04_clk_pll_prog(struct nvkm_clk *, u32 reg1, struct nvkm_pll_vals *);
+ 
+-void nv40_clk_update(struct nvkm_clk *, int pstate);
+-void gf100_clk_update(struct nvkm_clk *, int pstate);
++void nv40_clk_update(struct nvkm_clk *, int pstate, bool force);
++void gf100_clk_update(struct nvkm_clk *, int pstate, bool force);
+ #endif
+-- 
+2.9.2
+

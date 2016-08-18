@@ -1,0 +1,128 @@
+From 7d63e0fb9e3f31e5f0a440f765341700a755eb0c Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:09 +0200
+Subject: [PATCH 21/36] nvif: Add boost info and set operations
+
+v5: Return ENODEV on devices without any vpstates.
+    Fail earlier if not supported.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/include/nvif/if0001.h     | 15 +++++++++
+ drm/nouveau/nvkm/engine/device/ctrl.c | 61 +++++++++++++++++++++++++++++++++++
+ 2 files changed, 76 insertions(+)
+
+diff --git a/drm/nouveau/include/nvif/if0001.h b/drm/nouveau/include/nvif/if0001.h
+index bd5b641..e4acd19 100644
+--- a/drm/nouveau/include/nvif/if0001.h
++++ b/drm/nouveau/include/nvif/if0001.h
+@@ -4,6 +4,8 @@
+ #define NVIF_CONTROL_PSTATE_INFO                                           0x00
+ #define NVIF_CONTROL_PSTATE_ATTR                                           0x01
+ #define NVIF_CONTROL_PSTATE_USER                                           0x02
++#define NVIF_CONTROL_BOOST_INFO                                            0x03
++#define NVIF_CONTROL_BOOST_SET                                             0x04
+ 
+ struct nvif_control_pstate_info_v0 {
+ 	__u8  version;
+@@ -43,4 +45,17 @@ struct nvif_control_pstate_user_v0 {
+ 	__s8  pwrsrc; /*  in: target power source */
+ 	__u8  pad03[5];
+ };
++
++struct nvif_control_boost_info_v0 {
++	__u8  version;
++	__u8  mode;
++	__u16 base_mhz;
++	__u16 boost_mhz;
++	__u16 max_mhz;
++};
++
++struct nvif_control_boost_set_v0 {
++	__u8  version;
++	__u8  mode;
++};
+ #endif
+diff --git a/drm/nouveau/nvkm/engine/device/ctrl.c b/drm/nouveau/nvkm/engine/device/ctrl.c
+index b0ece71..cf7f27e 100644
+--- a/drm/nouveau/nvkm/engine/device/ctrl.c
++++ b/drm/nouveau/nvkm/engine/device/ctrl.c
+@@ -167,6 +167,63 @@ nvkm_control_mthd_pstate_user(struct nvkm_control *ctrl, void *data, u32 size)
+ }
+ 
+ static int
++nvkm_control_mthd_boost_info(struct nvkm_control *ctrl, void *data, u32 size)
++{
++	union {
++		struct nvif_control_boost_info_v0 v0;
++	} *args = data;
++	struct nvkm_clk *clk = ctrl->device->clk;
++	int ret = -ENOSYS;
++
++	if (!clk)
++		return -ENODEV;
++
++	if (!clk->base_khz && !clk->boost_khz)
++		return -ENODEV;
++
++	nvif_ioctl(&ctrl->object, "control boost info size %d\n", size);
++	if (!(ret = nvif_unpack(ret, &data, &size, args->v0, 0, 0, false))) {
++		nvif_ioctl(&ctrl->object, "control boost info vers %d\n",
++			   args->v0.version);
++	} else
++		return ret;
++
++	args->v0.mode = clk->boost_mode;
++	args->v0.base_mhz = clk->base_khz / 2000;
++	args->v0.boost_mhz = clk->boost_khz / 2000;
++	args->v0.max_mhz = clk->max_khz / 2000;
++	return 0;
++}
++
++static int
++nvkm_control_mthd_boost_set(struct nvkm_control *ctrl, void *data, u32 size)
++{
++	union {
++		struct nvif_control_boost_set_v0 v0;
++	} *args = data;
++	struct nvkm_clk *clk = ctrl->device->clk;
++	int ret = -ENOSYS;
++
++	if (!clk)
++		return -ENODEV;
++
++	if (!clk->base_khz && !clk->boost_khz)
++		return -ENODEV;
++
++	nvif_ioctl(&ctrl->object, "control boost set size %d\n", size);
++	if (!(ret = nvif_unpack(ret, &data, &size, args->v0, 0, 0, false))) {
++		nvif_ioctl(&ctrl->object, "control boost set vers %d\n",
++			   args->v0.version);
++	} else
++		return ret;
++
++	if (args->v0.mode > 2)
++		return -EINVAL;
++	clk->boost_mode = args->v0.mode;
++	return nvkm_clk_update(clk, true);
++}
++
++static int
+ nvkm_control_mthd(struct nvkm_object *object, u32 mthd, void *data, u32 size)
+ {
+ 	struct nvkm_control *ctrl = nvkm_control(object);
+@@ -177,6 +234,10 @@ nvkm_control_mthd(struct nvkm_object *object, u32 mthd, void *data, u32 size)
+ 		return nvkm_control_mthd_pstate_attr(ctrl, data, size);
+ 	case NVIF_CONTROL_PSTATE_USER:
+ 		return nvkm_control_mthd_pstate_user(ctrl, data, size);
++	case NVIF_CONTROL_BOOST_INFO:
++		return nvkm_control_mthd_boost_info(ctrl, data, size);
++	case NVIF_CONTROL_BOOST_SET:
++		return nvkm_control_mthd_boost_set(ctrl, data, size);
+ 	default:
+ 		break;
+ 	}
+-- 
+2.9.2
+

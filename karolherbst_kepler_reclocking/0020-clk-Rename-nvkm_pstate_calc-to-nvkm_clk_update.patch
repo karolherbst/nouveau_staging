@@ -1,0 +1,131 @@
+From a39c652ae2ad021252e85fe118a6e10c5d7fb6dd Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:09 +0200
+Subject: [PATCH 20/36] clk: Rename nvkm_pstate_calc to nvkm_clk_update
+
+This function will be used to update the current clock state.
+
+This will happen for various reasons:
+  * Temperature changes (may change cstate and/or voltage).
+  * User changes boost mode.
+  * Load changes.
+
+v2: Add wait parameter.
+v5: Moved out unrelated changes.
+    Make the function safe to be callable from outside.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+---
+ drm/nouveau/include/nvkm/subdev/clk.h |  1 +
+ drm/nouveau/nvkm/subdev/clk/base.c    | 26 ++++++++++++++++----------
+ 2 files changed, 17 insertions(+), 10 deletions(-)
+
+diff --git a/drm/nouveau/include/nvkm/subdev/clk.h b/drm/nouveau/include/nvkm/subdev/clk.h
+index 87751af..59e727a 100644
+--- a/drm/nouveau/include/nvkm/subdev/clk.h
++++ b/drm/nouveau/include/nvkm/subdev/clk.h
+@@ -124,6 +124,7 @@ int nvkm_clk_ustate(struct nvkm_clk *, int req, int pwr);
+ int nvkm_clk_astate(struct nvkm_clk *, int req, int rel, bool wait);
+ int nvkm_clk_dstate(struct nvkm_clk *, int req, int rel);
+ int nvkm_clk_tstate(struct nvkm_clk *, u8 temperature);
++int nvkm_clk_update(struct nvkm_clk *clk, bool wait);
+ 
+ int nv04_clk_new(struct nvkm_device *, int, struct nvkm_clk **);
+ int nv40_clk_new(struct nvkm_device *, int, struct nvkm_clk **);
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index ea143ea..8cfd9cc 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -298,7 +298,7 @@ nvkm_pstate_prog(struct nvkm_clk *clk, int pstatei)
+ }
+ 
+ static void
+-nvkm_pstate_work(struct work_struct *work)
++nvkm_clk_update_work(struct work_struct *work)
+ {
+ 	struct nvkm_clk *clk = container_of(work, typeof(*clk), work);
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+@@ -334,9 +334,15 @@ nvkm_pstate_work(struct work_struct *work)
+ 	nvkm_notify_get(&clk->pwrsrc_ntfy);
+ }
+ 
+-static int
+-nvkm_pstate_calc(struct nvkm_clk *clk, bool wait)
++int
++nvkm_clk_update(struct nvkm_clk *clk, bool wait)
+ {
++	if (!clk)
++		return -EINVAL;
++
++	if (!clk->allow_reclock)
++		return -ENODEV;
++
+ 	atomic_set(&clk->waiting, 1);
+ 	schedule_work(&clk->work);
+ 	if (wait)
+@@ -526,7 +532,7 @@ nvkm_clk_ustate(struct nvkm_clk *clk, int req, int pwr)
+ 	if (ret >= 0) {
+ 		if (ret -= 2, pwr) clk->ustate_ac = ret;
+ 		else		   clk->ustate_dc = ret;
+-		return nvkm_pstate_calc(clk, true);
++		return nvkm_clk_update(clk, true);
+ 	}
+ 	return ret;
+ }
+@@ -538,7 +544,7 @@ nvkm_clk_astate(struct nvkm_clk *clk, int req, int rel, bool wait)
+ 	if ( rel) clk->astate += rel;
+ 	clk->astate = min(clk->astate, clk->state_nr - 1);
+ 	clk->astate = max(clk->astate, 0);
+-	return nvkm_pstate_calc(clk, wait);
++	return nvkm_clk_update(clk, wait);
+ }
+ 
+ int
+@@ -547,7 +553,7 @@ nvkm_clk_tstate(struct nvkm_clk *clk, u8 temp)
+ 	if (clk->temp == temp)
+ 		return 0;
+ 	clk->temp = temp;
+-	return nvkm_pstate_calc(clk, false);
++	return nvkm_clk_update(clk, false);
+ }
+ 
+ int
+@@ -557,7 +563,7 @@ nvkm_clk_dstate(struct nvkm_clk *clk, int req, int rel)
+ 	if ( rel) clk->dstate += rel;
+ 	clk->dstate = min(clk->dstate, clk->state_nr - 1);
+ 	clk->dstate = max(clk->dstate, 0);
+-	return nvkm_pstate_calc(clk, true);
++	return nvkm_clk_update(clk, true);
+ }
+ 
+ static int
+@@ -565,7 +571,7 @@ nvkm_clk_pwrsrc(struct nvkm_notify *notify)
+ {
+ 	struct nvkm_clk *clk =
+ 		container_of(notify, typeof(*clk), pwrsrc_ntfy);
+-	nvkm_pstate_calc(clk, false);
++	nvkm_clk_update(clk, false);
+ 	return NVKM_NOTIFY_DROP;
+ }
+ 
+@@ -620,7 +626,7 @@ nvkm_clk_init(struct nvkm_subdev *subdev)
+ 	clk->dstate = 0;
+ 	clk->pstate = -1;
+ 	clk->temp = 90; /* reasonable default value */
+-	nvkm_pstate_calc(clk, true);
++	nvkm_clk_update(clk, true);
+ 	return 0;
+ }
+ 
+@@ -677,7 +683,7 @@ nvkm_clk_ctor(const struct nvkm_clk_func *func, struct nvkm_device *device,
+ 	clk->ustate_dc = -1;
+ 	clk->allow_reclock = allow_reclock;
+ 
+-	INIT_WORK(&clk->work, nvkm_pstate_work);
++	INIT_WORK(&clk->work, nvkm_clk_update_work);
+ 	init_waitqueue_head(&clk->wait);
+ 	atomic_set(&clk->waiting, 0);
+ 
+-- 
+2.9.2
+

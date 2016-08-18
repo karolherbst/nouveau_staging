@@ -1,0 +1,183 @@
+From 965f7e7fea0ab8b15e64097c53564bf3a8f4fa82 Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:10 +0200
+Subject: [PATCH 30/36] clk: Only do partial reclocks as required
+
+We don't want to reclock to the same pstate or cstate over and over again,
+so only do things we actually have to do.
+
+v4: move into gf100
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/nvkm/subdev/clk/base.c  | 11 +++++--
+ drm/nouveau/nvkm/subdev/clk/gf100.c | 62 ++++++++++++++++++++++++++++++++++++-
+ drm/nouveau/nvkm/subdev/clk/gk104.c |  2 +-
+ drm/nouveau/nvkm/subdev/clk/priv.h  |  4 +++
+ 4 files changed, 74 insertions(+), 5 deletions(-)
+
+diff --git a/drm/nouveau/nvkm/subdev/clk/base.c b/drm/nouveau/nvkm/subdev/clk/base.c
+index 7d637f1..76b8560 100644
+--- a/drm/nouveau/nvkm/subdev/clk/base.c
++++ b/drm/nouveau/nvkm/subdev/clk/base.c
+@@ -107,7 +107,7 @@ nvkm_cstate_valid(struct nvkm_clk *clk, struct nvkm_cstate *cstate,
+ 	return voltage <= min(max_volt, volt->max_uv);
+ }
+ 
+-static struct nvkm_cstate *
++struct nvkm_cstate *
+ nvkm_cstate_find_best(struct nvkm_clk *clk, struct nvkm_pstate *pstate,
+ 		      struct nvkm_cstate *start)
+ {
+@@ -142,7 +142,7 @@ nvkm_cstate_find_best(struct nvkm_clk *clk, struct nvkm_pstate *pstate,
+ 	return cstate;
+ }
+ 
+-static struct nvkm_cstate *
++struct nvkm_cstate *
+ nvkm_cstate_get(struct nvkm_clk *clk, struct nvkm_pstate *pstate, int cstatei)
+ {
+ 	struct nvkm_cstate *cstate;
+@@ -162,7 +162,7 @@ nvkm_cstate_get(struct nvkm_clk *clk, struct nvkm_pstate *pstate, int cstatei)
+ 	return NULL;
+ }
+ 
+-static int
++int
+ nvkm_cstate_prog(struct nvkm_clk *clk, struct nvkm_pstate *pstate, int cstatei)
+ {
+ 	struct nvkm_subdev *subdev = &clk->subdev;
+@@ -182,6 +182,11 @@ nvkm_cstate_prog(struct nvkm_clk *clk, struct nvkm_pstate *pstate, int cstatei)
+ 		cstate = &pstate->base;
+ 	}
+ 
++	if (!cstate) {
++		nvkm_error(subdev, "failed to set cstate %d\n", cstatei);
++		return -EINVAL;
++	}
++
+ 	if (therm) {
+ 		ret = nvkm_therm_cstate(therm, pstate->fanspeed, +1);
+ 		if (ret && ret != -ENODEV) {
+diff --git a/drm/nouveau/nvkm/subdev/clk/gf100.c b/drm/nouveau/nvkm/subdev/clk/gf100.c
+index 8a46bf8..3ac0d5f 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gf100.c
++++ b/drm/nouveau/nvkm/subdev/clk/gf100.c
+@@ -28,6 +28,7 @@
+ #include <subdev/bios.h>
+ #include <subdev/bios/pll.h>
+ #include <subdev/timer.h>
++#include <subdev/volt.h>
+ 
+ struct gf100_clk_info {
+ 	u32 freq;
+@@ -445,13 +446,72 @@ gf100_clk_tidy(struct nvkm_clk *base)
+ 	memset(clk->eng, 0x00, sizeof(clk->eng));
+ }
+ 
++static int
++gf100_clk_update_volt(struct nvkm_clk *clk)
++{
++	struct nvkm_subdev *subdev = &clk->subdev;
++	struct nvkm_volt *volt = subdev->device->volt;
++	struct nvkm_therm *therm = subdev->device->therm;
++
++	if (!volt || !therm || !clk->pstate || !clk->set_cstate)
++		return -EINVAL;
++
++	return nvkm_volt_set_id(volt, clk->set_cstate->voltage,
++				clk->pstate->base.voltage, 0);
++}
++
++void
++gf100_clk_update(struct nvkm_clk *clk, int pstate)
++{
++	struct nvkm_subdev *subdev = &clk->subdev;
++	int ret;
++
++	if (!clk->pstate || clk->pstate->pstate != pstate) {
++		nvkm_trace(subdev, "-> P %d\n", pstate);
++		ret = nvkm_pstate_prog(clk, pstate);
++		if (ret) {
++			nvkm_error(subdev, "error setting pstate %d: %d\n",
++				   pstate, ret);
++		}
++	} else if (!clk->set_cstate ||
++		   clk->set_cstate->id != clk->exp_cstate) {
++
++		struct nvkm_cstate *cstate = nvkm_cstate_get(clk, clk->pstate, clk->exp_cstate);
++		if (!cstate) {
++			nvkm_error(subdev, "can't find cstate %i\n",
++				   clk->exp_cstate);
++			return;
++		}
++
++		cstate = nvkm_cstate_find_best(clk, clk->pstate, cstate);
++		if (!cstate) {
++			nvkm_error(subdev, "can't find best cstate for %i\n",
++				   cstate->id);
++			return;
++		}
++
++		if (cstate != clk->set_cstate) {
++			nvkm_trace(subdev, "-> C %d\n", cstate->id);
++			ret = nvkm_cstate_prog(clk, clk->pstate, cstate->id);
++			if (ret) {
++				nvkm_error(subdev, "error setting cstate %d: %d\n",
++					   cstate->id, ret);
++			}
++		} else {
++			gf100_clk_update_volt(clk);
++		}
++	} else {
++		gf100_clk_update_volt(clk);
++	}
++}
++
+ static const struct nvkm_clk_func
+ gf100_clk = {
+ 	.read = gf100_clk_read,
+ 	.calc = gf100_clk_calc,
+ 	.prog = gf100_clk_prog,
+ 	.tidy = gf100_clk_tidy,
+-	.update = nv40_clk_update,
++	.update = gf100_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/gk104.c b/drm/nouveau/nvkm/subdev/clk/gk104.c
+index cae58b6..691f3fb 100644
+--- a/drm/nouveau/nvkm/subdev/clk/gk104.c
++++ b/drm/nouveau/nvkm/subdev/clk/gk104.c
+@@ -488,7 +488,7 @@ gk104_clk = {
+ 	.calc = gk104_clk_calc,
+ 	.prog = gk104_clk_prog,
+ 	.tidy = gk104_clk_tidy,
+-	.update = nv40_clk_update,
++	.update = gf100_clk_update,
+ 	.domains = {
+ 		{ nv_clk_src_crystal, 0xff },
+ 		{ nv_clk_src_href   , 0xff },
+diff --git a/drm/nouveau/nvkm/subdev/clk/priv.h b/drm/nouveau/nvkm/subdev/clk/priv.h
+index 958f5e3..e2f15c4 100644
+--- a/drm/nouveau/nvkm/subdev/clk/priv.h
++++ b/drm/nouveau/nvkm/subdev/clk/priv.h
+@@ -22,10 +22,14 @@ int nvkm_clk_new_(const struct nvkm_clk_func *, struct nvkm_device *, int,
+ 		  bool allow_reclock, struct nvkm_clk **);
+ 
+ int nvkm_pstate_prog(struct nvkm_clk *, int pstateid);
++int nvkm_cstate_prog(struct nvkm_clk *, struct nvkm_pstate *, int cstatei);
++struct nvkm_cstate * nvkm_cstate_get(struct nvkm_clk *, struct nvkm_pstate *, int cstatei);
++struct nvkm_cstate * nvkm_cstate_find_best(struct nvkm_clk *, struct nvkm_pstate *, struct nvkm_cstate *start);
+ 
+ int nv04_clk_pll_calc(struct nvkm_clk *, struct nvbios_pll *, int clk,
+ 		      struct nvkm_pll_vals *);
+ int nv04_clk_pll_prog(struct nvkm_clk *, u32 reg1, struct nvkm_pll_vals *);
+ 
+ void nv40_clk_update(struct nvkm_clk *, int pstate);
++void gf100_clk_update(struct nvkm_clk *, int pstate);
+ #endif
+-- 
+2.9.2
+

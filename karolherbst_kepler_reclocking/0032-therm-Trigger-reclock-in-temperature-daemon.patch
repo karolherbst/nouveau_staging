@@ -1,0 +1,44 @@
+From 9e62654f12e7a1f866da501030d4f31b618ccf74 Mon Sep 17 00:00:00 2001
+From: Karol Herbst <karolherbst@gmail.com>
+Date: Tue, 12 Jul 2016 21:36:10 +0200
+Subject: [PATCH 32/36] therm: Trigger reclock in temperature daemon
+
+Depending on the temperature, cstates might become unreachable or the maped
+voltage of a cstate changes. We want to adjust to that.
+
+Signed-off-by: Karol Herbst <karolherbst@gmail.com>
+Reviewed-by: Martin Peres <martin.peres@free.fr>
+---
+ drm/nouveau/nvkm/subdev/therm/base.c | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/drm/nouveau/nvkm/subdev/therm/base.c b/drm/nouveau/nvkm/subdev/therm/base.c
+index a3220f1..1ebc281 100644
+--- a/drm/nouveau/nvkm/subdev/therm/base.c
++++ b/drm/nouveau/nvkm/subdev/therm/base.c
+@@ -23,6 +23,8 @@
+  */
+ #include "priv.h"
+ 
++#include <subdev/clk.h>
++
+ int
+ nvkm_therm_temp_get(struct nvkm_therm *therm)
+ {
+@@ -151,8 +153,13 @@ nvkm_therm_alarm(struct nvkm_alarm *alarm)
+ {
+ 	struct nvkm_therm *therm =
+ 	       container_of(alarm, struct nvkm_therm, alarm);
++	struct nvkm_clk *clk = therm->subdev.device->clk;
++
+ 	therm->last_temp = nvkm_therm_temp_get(therm);
+ 	nvkm_therm_update(therm, therm->last_temp, -1);
++
++	if (clk)
++		nvkm_clk_tstate(clk, therm->last_temp);
+ }
+ 
+ int
+-- 
+2.9.2
+
